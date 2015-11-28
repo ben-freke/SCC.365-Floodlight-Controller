@@ -58,7 +58,9 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
 
 	protected static Logger log = LoggerFactory.getLogger(Practical.class);
 	protected IFloodlightProviderService floodlightProvider;
-
+	private HashMap<Long, RouterData> routers = new HashMap<Long, RouterData>();
+	
+	
 	@Override
 	public String getName() {
 		return "practical";
@@ -104,15 +106,113 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
 	@Override
 	/* Handle a packet message - called every time a packet is received */
 	public Command receive(IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
+		OFPacketIn pi = (OFPacketIn) msg;
+		OFMatch match = new OFMatch(); 
+		match.loadFromPacket(pi.getPacketData(), pi.getInPort());
+		RouteTable routeTable = null;
+		ARPTable arpTable = null;
 		//Get router data for this switch
-
+		System.out.println("Packet Received");
+		if (!routers.containsKey(sw.getId()))
+		{
+			routers.put(sw.getId(), new RouterData(sw));
+			//If the router doesn't exist in the Router Map, add it to the Router Map.
+			System.out.println("Router Added");
+		}
+		
 		//Get route table from router data
-
+		routeTable = routers.get(sw.getId()).routeTable();
 		//Get ARP table from router data				
-
+		arpTable = routers.get(sw.getId()).arpTable();
+		
 		//Do routing logic here (installing flowmods, forwarding, dropping, and replying to ICMP requests)
+		
+		ArrayList<OFAction> actionsArray = new ArrayList<OFAction>();
+		
+		String ip[] = match.toString().split(",");
+    	String ipParts[] = ip[7].split("=");
+    	String ipSrc = ipParts[1];
+    	ipParts = ip[6].split("=");
+    	String ipDst = ipParts[1];
+		
+    	if(routeTable.nextHop(ipSrc).equals(routeTable.nextHop(ipDst)))
+    	{
+    		System.out.println("It's coming to me, the router");
+    		String mac = arpTable.mac(ipSrc);
+    		String[] macParts = mac.split(":");
 
+    		// convert hex string to byte values
+    		byte[] macBytes = new byte[6];
+    		for(int i=0; i<6; i++){
+    		    Integer hex = Integer.parseInt(macParts[i], 16);
+    		    macBytes[i] = hex.byteValue();
+    		}
+  
+    		writeICMPReplyToPort(sw, pi, ipSrc, match.getDataLayerSource(), ipDst, match.getDataLayerDestination(), pi.getInPort(), cntx);
+    	}
+    	
+    	else if (arpTable.hasARP(ipDst))
+    	{
+    		System.out.println("Has the ARP.");
+    		
+    		String mac = arpTable.mac(ipDst);
+    		String[] macParts = mac.split(":");
+
+    		// convert hex string to byte values
+    		byte[] macBytes = new byte[6];
+    		for(int i=0; i<6; i++){
+    		    Integer hex = Integer.parseInt(macParts[i], 16);
+    		    macBytes[i] = hex.byteValue();
+    		}
+    		
+    		
+    		OFActionDataLayerDestination actionDestination = new OFActionDataLayerDestination();
+    		actionDestination.setDataLayerAddress(macBytes);
+    		actionsArray.add(actionDestination);
+    		
+    		OFActionOutput actionOutput = new OFActionOutput();
+        	actionOutput.setPort(routeTable.outPort(ipDst));
+        	actionsArray.add(actionOutput);
+    		
+    	}
+    	
+    	else 
+    	{
+    		
+    		String mac = arpTable.mac(routeTable.nextHop(ipDst));
+    		String[] macParts = mac.split(":");
+
+    		// convert hex string to byte values
+    		byte[] macBytes = new byte[6];
+    		for(int i=0; i<6; i++){
+    		    Integer hex = Integer.parseInt(macParts[i], 16);
+    		    macBytes[i] = hex.byteValue();
+    		}
+    		
+    		
+    		OFActionDataLayerDestination actionDestination = new OFActionDataLayerDestination();
+    		actionDestination.setDataLayerAddress(macBytes);
+    		actionsArray.add(actionDestination);
+    		
+    		System.out.println("Does not have the ARP.");
+    		OFActionOutput actionOutput = new OFActionOutput();
+        	actionOutput.setPort(routeTable.outPort(ipDst));
+        	actionsArray.add(actionOutput);
+        }
+    	
+		System.out.println("Destination: " + String.valueOf(match.getNetworkDestination()));
+		System.out.println("Out Port: " + String.valueOf(routeTable.outPort(ipDst)));
+		System.out.println("Next Hop: " + String.valueOf(routeTable.nextHop(ipDst)));
+		System.out.println("Switch: " + String.valueOf(sw.getId()));
+
+    	
+    	writePacketToPort(sw, pi, actionsArray, cntx);
+    			
+		
 		//Allow Floodlight to continue processing the packet
+		
+		
+		
 		return Command.CONTINUE;
 	}
 
@@ -145,7 +245,6 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
 			log.error("Failure writing packet to port", e);
 		}
 	}
-
 
 	/*
 	* Write an ICMP reply packet out that is replying to the packet in ICMP request
@@ -194,7 +293,6 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
 			log.error("Failure writing packet to port", e);
 		}
 	}
-
 
 	/* Install a flow-mod with given parameters */
 	private void installFlowMod(IOFSwitch sw, OFPacketIn pi, OFMatch match, ArrayList<OFAction> actions, int idleTimeout, int hardTimeout, int priority, FloodlightContext cntx){
