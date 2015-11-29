@@ -59,7 +59,7 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
 	protected static Logger log = LoggerFactory.getLogger(Practical.class);
 	protected IFloodlightProviderService floodlightProvider;
 	private HashMap<Long, RouterData> routers = new HashMap<Long, RouterData>();
-	
+	private int noFlowMods = 0;
 	
 	@Override
 	public String getName() {
@@ -174,6 +174,12 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
         	actionOutput.setPort(routeTable.outPort(ipDst));
         	actionsArray.add(actionOutput);
     		
+        	OFMatch newMatch = new OFMatch();
+        	newMatch.fromString("dl_type=0x0800,nw_dst=" + ipDst);
+        	System.out.println("Flow Added");
+        	installFlowMod(sw, pi, newMatch, actionsArray, 0, 0, 1, cntx);
+        	noFlowMods++;
+        	System.out.println("Number of Flow Mods:" + noFlowMods);
     	}
     	
     	else 
@@ -198,6 +204,16 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
     		OFActionOutput actionOutput = new OFActionOutput();
         	actionOutput.setPort(routeTable.outPort(ipDst));
         	actionsArray.add(actionOutput);
+        	
+        	String[] ipDstParts = ipDst.split("\\.");
+        	String ipDstNet = ipDstParts[0] + "." + ipDstParts[1] + "." + ipDstParts[2] + ".0/24";
+        	System.out.println(ipDstNet);
+        	OFMatch newMatch = new OFMatch();
+        	newMatch.fromString("dl_type=0x0800,nw_dst=" + ipDstNet);
+        	System.out.println("Flow Added");
+        	installFlowMod(sw, pi, newMatch, actionsArray, 0, 0, 1, cntx);
+        	noFlowMods++;
+        	System.out.println("Number of Flow Mods:" + noFlowMods);
         }
     	
 		System.out.println("Destination: " + String.valueOf(match.getNetworkDestination()));
