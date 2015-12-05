@@ -153,7 +153,7 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
     	
     	else if (arpTable.hasARP(ipDst))
     	{
-    		System.out.println("Has the ARP.");
+    		System.out.println("Has the ARP, so it's on my network");
     		
     		String mac = arpTable.mac(ipDst);
     		String[] macParts = mac.split(":");
@@ -182,7 +182,7 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
         	System.out.println("Number of Flow Mods:" + noFlowMods);
     	}
     	
-    	else 
+    	else if (routeTable.nextHop(ipDst) != null)
     	{
     		
     		String mac = arpTable.mac(routeTable.nextHop(ipDst));
@@ -200,7 +200,7 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
     		actionDestination.setDataLayerAddress(macBytes);
     		actionsArray.add(actionDestination);
     		
-    		System.out.println("Does not have the ARP.");
+    		System.out.println("Does not have the ARP, so it's going to a different network");
     		OFActionOutput actionOutput = new OFActionOutput();
         	actionOutput.setPort(routeTable.outPort(ipDst));
         	actionsArray.add(actionOutput);
@@ -221,6 +221,22 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
 		System.out.println("Next Hop: " + String.valueOf(routeTable.nextHop(ipDst)));
 		System.out.println("Switch: " + String.valueOf(sw.getId()));
 
+
+		if (routeTable.nextHop(ipDst) == null){
+			System.out.println("Destination Unreachable");
+
+			OFActionOutput actionOutput = new OFActionOutput();
+			actionOutput.setPort(OFPort.OFPP_NONE.getValue());
+			actionsArray.add(actionOutput);
+
+			String[] ipDstParts = ipDst.split("\\.");
+			String ipDstNet = ipDstParts[0] + "." + ipDstParts[1] + "." + ipDstParts[2] + ".0/24";
+
+			OFMatch newMatch = new OFMatch();
+			newMatch.fromString("dl_type=0x0800,nw_dst=" + ipDstNet);
+			System.out.println("Flow Added");
+			installFlowMod(sw, pi, newMatch, actionsArray, 0, 0, 1, cntx);
+		}
     	
     	writePacketToPort(sw, pi, actionsArray, cntx);
     			
