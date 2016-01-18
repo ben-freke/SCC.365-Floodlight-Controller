@@ -47,7 +47,7 @@
 
 
 /**
-* @author your name
+* @author Ben Freke
 * SCC365 router coursework - Static routers with ICMP response capability
 *
 * This is a skeleton class
@@ -106,37 +106,112 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
 	@Override
 	/* Handle a packet message - called every time a packet is received */
 	public Command receive(IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
+
+		/**
+		 * The receive command. This handles incoming packets.
+		 */
+
+		/**
+		 * Set up the variables that are used in the packet inspection.
+		 * Set up the RouteTable and ARPTable objects to be used for packet forwarding
+		 */
+
 		OFPacketIn pi = (OFPacketIn) msg;
 		OFMatch match = new OFMatch(); 
 		match.loadFromPacket(pi.getPacketData(), pi.getInPort());
 		RouteTable routeTable = null;
 		ARPTable arpTable = null;
-		//Get router data for this switch
 		System.out.println("Packet Received");
+		System.out.println(match.getDataLayerType());
+
+
+		/**
+		 * If the OpenFlow Controller hasn't dealt with this router before, add the router to the routers HashMap
+		 */
+
 		if (!routers.containsKey(sw.getId()))
 		{
 			routers.put(sw.getId(), new RouterData(sw));
 			//If the router doesn't exist in the Router Map, add it to the Router Map.
 			System.out.println("Router Added");
 		}
-		
-		//Get route table from router data
+
+
+		/**
+		 * Now the controller is interfacing with a known switch, retreive the routing table and arp table,
+		 * and store them in the variables created above.
+		 */
 		routeTable = routers.get(sw.getId()).routeTable();
-		//Get ARP table from router data				
 		arpTable = routers.get(sw.getId()).arpTable();
-		
-		//Do routing logic here (installing flowmods, forwarding, dropping, and replying to ICMP requests)
-		
+
+		/**
+		 * Create an array of OFActions, for actions to be pushed to and ultimately to be sent to the OF Switch
+		 */
+
 		ArrayList<OFAction> actionsArray = new ArrayList<OFAction>();
-		
+
+		/**
+		 * Decode the OFMatch object to determine the IP Source and Destination Addresses
+		 */
+
 		String ip[] = match.toString().split(",");
     	String ipParts[] = ip[7].split("=");
     	String ipSrc = ipParts[1];
     	ipParts = ip[6].split("=");
     	String ipDst = ipParts[1];
-		
-    	if(routeTable.nextHop(ipSrc).equals(routeTable.nextHop(ipDst)))
+
+		/**
+		 * Test that the packet is IPv4 - if it isn't, drop it.
+		 */
+
+		if (match.getDataLayerType() != 2048){
+
+			/**
+			 * Packet is not IPv4
+			 */
+
+			System.out.println("Not IPv4");
+
+			/**
+			 * Generate a OFActionOutput with a null port to drop the packet
+			 */
+
+			OFActionOutput actionOutput = new OFActionOutput();
+			actionOutput.setPort(OFPort.OFPP_NONE.getValue());
+			actionsArray.add(actionOutput);
+
+			/**
+			 * Generate an OF Match for the entire data layer type (e.g. all ARP packets)
+			 */
+
+			OFMatch newMatch = new OFMatch();
+			newMatch.fromString("dl_type=0x" + Integer.toHexString(match.getDataLayerType()));
+
+			/**
+			 * Push the FlowMod to the OpenFlow Switch, causing it to drop all future packets to for this DL type.
+			 */
+
+			System.out.println("Flow Added");
+			installFlowMod(sw, pi, newMatch, actionsArray, 0, 0, 1, cntx);
+
+			/**
+			 * Write the packet to the port and continue processing. Don't run anything else on the receive command.
+			 */
+
+			writePacketToPort(sw, pi, actionsArray, cntx);
+			return Command.CONTINUE;
+
+
+		}
+
+		/**
+		 * Test if the packet is coming to the router and if it's ICMP
+		 * If it is, get the MAC Address of the source, and create and send an ICMP reply to that MAC Address
+		 */
+
+    	if(routeTable.nextHop(ipSrc).equals(routeTable.nextHop(ipDst)) && match.getNetworkProtocol() == 1)
     	{
+
     		System.out.println("It's coming to me, the router");
     		String mac = arpTable.mac(ipSrc);
     		String[] macParts = mac.split(":");
@@ -150,11 +225,20 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
   
     		writeICMPReplyToPort(sw, pi, ipSrc, match.getDataLayerSource(), ipDst, match.getDataLayerDestination(), pi.getInPort(), cntx);
     	}
-    	
+
+		/**
+		 * If it's not coming to the router, but the router has the MAC address in its ARP table, the desintation
+		 * node is on the router's own network (for example, a router connected to this router).
+		 */
+
     	else if (arpTable.hasARP(ipDst))
     	{
     		System.out.println("Has the ARP, so it's on my network");
-    		
+
+			/**
+			 * Get the MAC Address of the destination
+			 */
+
     		String mac = arpTable.mac(ipDst);
     		String[] macParts = mac.split(":");
 
@@ -164,27 +248,53 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
     		    Integer hex = Integer.parseInt(macParts[i], 16);
     		    macBytes[i] = hex.byteValue();
     		}
-    		
+
+			/**
+			 * Create a desintation action to send the packet to, and give it the MAC address derived above
+			 */
     		
     		OFActionDataLayerDestination actionDestination = new OFActionDataLayerDestination();
     		actionDestination.setDataLayerAddress(macBytes);
     		actionsArray.add(actionDestination);
-    		
+
+			/**
+			 * Create an output action to send the packet to a port
+			 */
+
     		OFActionOutput actionOutput = new OFActionOutput();
         	actionOutput.setPort(routeTable.outPort(ipDst));
         	actionsArray.add(actionOutput);
-    		
+
+			/**
+			 * Create a new match with the correct data layer type and destination IP address
+			 */
+
         	OFMatch newMatch = new OFMatch();
         	newMatch.fromString("dl_type=0x0800,nw_dst=" + ipDst);
+
+			/**
+			 * Push the flow to the switch
+			 */
+
         	System.out.println("Flow Added");
         	installFlowMod(sw, pi, newMatch, actionsArray, 0, 0, 1, cntx);
         	noFlowMods++;
         	System.out.println("Number of Flow Mods:" + noFlowMods);
     	}
-    	
+
+		/**
+		 * If the router has the next hop (but it doesn't have the device on its network)
+		 */
+
     	else if (routeTable.nextHop(ipDst) != null)
     	{
-    		
+
+			System.out.println("Does not have the ARP, so it's going to a different network");
+
+			/**
+			 * Parse the MAC Address
+			 */
+
     		String mac = arpTable.mac(routeTable.nextHop(ipDst));
     		String[] macParts = mac.split(":");
 
@@ -194,56 +304,102 @@ public class Practical implements IFloodlightModule, IOFMessageListener {
     		    Integer hex = Integer.parseInt(macParts[i], 16);
     		    macBytes[i] = hex.byteValue();
     		}
-    		
+
+			/**
+			 * Create a desintation action to send the packet to, and give it the MAC address derived above
+			 */
     		
     		OFActionDataLayerDestination actionDestination = new OFActionDataLayerDestination();
     		actionDestination.setDataLayerAddress(macBytes);
     		actionsArray.add(actionDestination);
-    		
-    		System.out.println("Does not have the ARP, so it's going to a different network");
+
+			/**
+			 * Create an output action to send the packet to a port
+			 */
+
     		OFActionOutput actionOutput = new OFActionOutput();
         	actionOutput.setPort(routeTable.outPort(ipDst));
         	actionsArray.add(actionOutput);
-        	
+
+			/**
+			 * The subnet is changing, so IP Destinations can be pushed to the switch as a subnet instead of a whole IP
+			 * Parse the IP Destination, and generate the genetic subnet
+			 */
+
+
         	String[] ipDstParts = ipDst.split("\\.");
         	String ipDstNet = ipDstParts[0] + "." + ipDstParts[1] + "." + ipDstParts[2] + ".0/24";
         	System.out.println(ipDstNet);
+
+			/**
+			 * Create a new OFMatch with the IP Destination subnet in.
+			 */
         	OFMatch newMatch = new OFMatch();
         	newMatch.fromString("dl_type=0x0800,nw_dst=" + ipDstNet);
+
+			/**
+			 * Install the flow to the OpenFlow Switch
+			 */
         	System.out.println("Flow Added");
         	installFlowMod(sw, pi, newMatch, actionsArray, 0, 0, 1, cntx);
         	noFlowMods++;
         	System.out.println("Number of Flow Mods:" + noFlowMods);
         }
-    	
+
+		/**
+		 * Print out some debugging information
+		 */
+
 		System.out.println("Destination: " + String.valueOf(match.getNetworkDestination()));
 		System.out.println("Out Port: " + String.valueOf(routeTable.outPort(ipDst)));
 		System.out.println("Next Hop: " + String.valueOf(routeTable.nextHop(ipDst)));
 		System.out.println("Switch: " + String.valueOf(sw.getId()));
 
+		/**
+		 * If the next hop returns null, this means the IP Address is not in the routers ARP or Next Hop table, so
+		 * the router does not have a route to this node.
+		 */
 
 		if (routeTable.nextHop(ipDst) == null){
+
+
 			System.out.println("Destination Unreachable");
+
+			/**
+			 * Generate a OFActionOutput with a null port to drop the packet
+			 */
 
 			OFActionOutput actionOutput = new OFActionOutput();
 			actionOutput.setPort(OFPort.OFPP_NONE.getValue());
 			actionsArray.add(actionOutput);
 
+			/**
+			 * Generate an OF Match for the entire subnet (as the routing table works on a per subnet basis, so if
+			 * it can't match a packet the entire subnet is unreachable
+			 */
+
 			String[] ipDstParts = ipDst.split("\\.");
 			String ipDstNet = ipDstParts[0] + "." + ipDstParts[1] + "." + ipDstParts[2] + ".0/24";
-
 			OFMatch newMatch = new OFMatch();
 			newMatch.fromString("dl_type=0x0800,nw_dst=" + ipDstNet);
+
+			/**
+			 * Push the FlowMod to the OpenFlow Switch, causing it to drop all future packets to this subnet.
+			 */
+
 			System.out.println("Flow Added");
 			installFlowMod(sw, pi, newMatch, actionsArray, 0, 0, 1, cntx);
 		}
+
+		/**
+		 * Finally, write the packet to the port so the packet that came to the OpenFlow controller is not lost
+		 */
     	
     	writePacketToPort(sw, pi, actionsArray, cntx);
-    			
-		
-		//Allow Floodlight to continue processing the packet
-		
-		
+
+		/**
+		 * Continue packet processing
+		 */
 		
 		return Command.CONTINUE;
 	}
